@@ -1,0 +1,217 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    rg: "vpntest"
+    status: "absent"
+    
+    google: "absent"  ## absent or present
+    gcp_project: "gcp-kubernetes-224013"
+    gcp_cred_kind: "serviceaccount"
+    gcp_cred_file: "/home/fabian/gcp.json"
+    gcp_subnet: "10.164.31.0/24"
+    gcp_region: "us-east1"
+
+    az_region: "eastus"
+    az_network: "10.64.0.0/16"
+    az_subnet: 
+      - { subnet: '10.64.31.0/24', name: 'vmnet01' }
+    az_gwsubnet: "10.64.30.0/24"
+
+    secret_gen: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters') }}"
+ 
+  tasks:
+  #### Generate Secret Key for IKEv2 VPN
+    - set_fact:
+        shared_key: "{{ secret_gen }}"
+    - debug:
+        msg: "shared key: {{ shared_key }}"
+
+  #### AZURE Configuration
+    - name: "Azure: Create a resource group {{ rg }}"
+      azure_rm_resourcegroup:
+        name: "{{ rg }}"
+        location: "{{ az_region }}"
+        state: "{{ status }}"
+        force_delete_nonempty: true
+
+    - name: "Azure: Create a virtual network"
+      azure_rm_virtualnetwork:
+        name: "{{ rg }}_network"
+        resource_group: "{{ rg }}"
+        state: "{{ status }}"
+        address_prefixes_cidr:
+            - "{{ az_network }}"
+        tags:
+            testing: vpntest
+            delete: on-exit
+      when: status == "present"
+  
+    - name: "Azure: Add subnet"
+      azure_rm_subnet:
+        resource_group: "{{ rg }}"
+        name: "{{ rg }}_subnet_{{ item.name }}"
+        address_prefix: "{{ item.subnet }}"
+        virtual_network: "{{ rg }}_network"
+      with_items: 
+        "{{ az_subnet }}"
+      when: status == "present"
+
+    - name: "Azure: Add subnet GatewaySubnet"
+      azure_rm_subnet:
+        resource_group: "{{ rg }}"
+        name: "GatewaySubnet"
+        address_prefix: "{{ az_gwsubnet }}"
+        virtual_network: "{{ rg }}_network"
+      when: status == "present"
+
+    - name: "Azure: Create public IP address"
+      azure_rm_publicipaddress:
+        resource_group: "{{ rg }}"
+        allocation_method: dynamic
+        name: "{{ rg }}_vpn_pubip"
+        state: "{{ status }}"
+      register: output_ip_address
+      when: status == "present"
+    
+    - name: "Azure: Return public IP"
+      debug:
+        msg: "The public IP is {{ output_ip_address.state.ip_address }}." 
+      when: status == "present"
+
+    - set_fact:
+        azure_pubip: output_ip_address.state.ip_address
+      when: status == "present"
+
+    - name: "Azure: Create virtual network gateway"
+      azure_rm_virtualnetworkgateway:
+        resource_group: "{{ rg }}"
+        name: "{{ rg }}_vpngw"
+        sku: "VpnGw1"
+        ip_configurations:
+          - name: vpnipconfiguration
+            private_ip_allocation_method: Dynamic
+            public_ip_address_name: "{{ rg }}_vpn_pubip"
+        virtual_network: "{{ rg }}_network"
+        state: "{{ status }}"
+      register: azure_vpn
+      when: status == "present"
+
+
+#### GCP Configuration
+    - name: "GCP: create a network"
+      gcp_compute_network:
+        name: "{{ rg }}network"
+        auto_create_subnetworks: 'false'
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        #state: "{{ status }}"
+        state: present
+      register: network
+      when: google == "present"
+
+    - name: "GCP: create a subnetwork"
+      gcp_compute_subnetwork:
+        name: "subnetansible"
+        region: "{{ gcp_region}}"
+        network: "{{ network }}"
+        ip_cidr_range: "{{ gcp_subnet}}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        state: present
+      when: google == "present"
+    
+    - name: create a address
+      gcp_compute_address:
+        name: addressvpngateway
+        region: "{{ gcp_region }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        state: present
+      register: address
+      when: google == "present"
+    
+    - name: create a target vpn gateway
+      gcp_compute_target_vpn_gateway:
+        name: gateway-vpn-tunnel
+        region: "{{ gcp_region }}"
+        network: "{{ network }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        state: present
+      register: gateway
+      when: google == "present"
+    
+    - name: "GCP: create a forwarding rule ESP"
+      gcp_compute_forwarding_rule:
+        name: forwardingesp
+        region: "{{ gcp_region }}"
+        target: "{{ gateway }}"
+        ip_protocol: ESP
+        ip_address: "{{ address.address }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        network_tier: "STANDARD"
+        state: present
+      when: google == "present"
+
+    - name: "GCP: create a forwarding rule UDP500"
+      gcp_compute_forwarding_rule:
+        name: forwardingudp500
+        region: "{{ gcp_region }}"
+        target: "{{ gateway }}"
+        ip_protocol: UDP
+        port_range: "500"
+        ip_address: "{{ address.address }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        network_tier: "STANDARD"
+        state: present
+      when: google == "present"
+
+    - name: "GCP: create a forwarding rule UDP4500"
+      gcp_compute_forwarding_rule:
+        name: forwardingudp4500
+        region: "{{ gcp_region }}"
+        target: "{{ gateway }}"
+        ip_protocol: UDP
+        port_range: "4500"
+        ip_address: "{{ address.address }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        network_tier: "STANDARD"
+        state: present
+      when: google == "present"
+
+    - name: "GCP: create a vpn tunnel"
+      gcp_compute_vpn_tunnel:
+        name: "testobject"
+        region: "{{ gcp_region }}"
+        peer_ip: "{{ output_ip_address.state.ip_address }}"
+        target_vpn_gateway: "{{ gateway }}"
+        #remote_traffic_selector: "{{ az_network }}"
+        local_traffic_selector: "{{ gcp_subnet }}"
+        shared_secret: "{{ shared_key }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ gcp_cred_kind }}"
+        service_account_file: "{{ gcp_cred_file }}"
+        state: present
+      when: google == "present"
+
+#### VPN Connection azure
+    - name: "script: az network local-gateway create --gateway-ip-address {{address.address}} --name google --resource-group {{ rg }} --local-address-prefixes {{gcp_subnet}}"
+      script: /bin/true 
+##  
+    - name: "script: az network vpn-connection create --name connect2google --resource-group {{ rg }} --vnet-gateway1 {{ rg }}_vpngw -l {{ az_region }} --shared-key {{ shared_key }} --local-gateway2 google"
+      script: /bin/true
+
+
+      ####37768444727397308822
