@@ -4,12 +4,12 @@
   gather_facts: no
   vars:
     rg: "vpntest"
-    status: "absent"
+    status: "present"
     
     google: "absent"  ## absent or present
-    gcp_project: "gcp-kubernetes-224013"
+    gcp_project: "gcp-project"
     gcp_cred_kind: "serviceaccount"
-    gcp_cred_file: "/home/fabian/gcp.json"
+    gcp_cred_file: "/path/to/gcp.json"
     gcp_subnet: "10.164.31.0/24"
     gcp_region: "us-east1"
 
