@@ -207,11 +207,8 @@
       when: google == "present"
 
 #### VPN Connection azure
-    - name: "script: az network local-gateway create --gateway-ip-address {{address.address}} --name google --resource-group {{ rg }} --local-address-prefixes {{gcp_subnet}}"
-      script: /bin/true 
-##  
-    - name: "script: az network vpn-connection create --name connect2google --resource-group {{ rg }} --vnet-gateway1 {{ rg }}_vpngw -l {{ az_region }} --shared-key {{ shared_key }} --local-gateway2 google"
-      script: /bin/true
+    - name: "script: Setup VPN Gateway
+      script: az network local-gateway create --gateway-ip-address {{address.address}} --name google --resource-group {{ rg }} --local-address-prefixes {{gcp_subnet}}"
 
-
-      ####37768444727397308822
+    - name: "script: Etablish connection to Google
+      script: az network vpn-connection create --name connect2google --resource-group {{ rg }} --vnet-gateway1 {{ rg }}_vpngw -l {{ az_region }} --shared-key {{ shared_key }} --local-gateway2 google"
